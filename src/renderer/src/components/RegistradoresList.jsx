@@ -1,16 +1,21 @@
-function RegistradoresList({ registradores }) {
+import { useState, useRef, useEffect } from 'react';
+
+function RegistradoresList({ registradores, onAbrirLogs }) {
+  const [menuContextual, setMenuContextual] = useState({ visible: false, x: 0, y: 0, registrador: null });
+  const menuRef = useRef(null);
+
   const getEstadoIcon = (estado) => {
     switch (estado) {
       case 'activo':
-        return '●';
+        return String.fromCharCode(9679); // ●
       case 'error':
-        return '✕';
+        return String.fromCharCode(10005); // ✕
       case 'inactivo':
-        return '○';
+        return String.fromCharCode(9675); // ○
       case 'leyendo':
-        return '◐';
+        return String.fromCharCode(9680); // ◐
       default:
-        return '○';
+        return String.fromCharCode(9675); // ○
     }
   };
 
@@ -29,6 +34,38 @@ function RegistradoresList({ registradores }) {
   const totalExitosas = registradores.reduce((sum, r) => sum + (r.lecturasExitosas || 0), 0);
   const totalFallidas = registradores.reduce((sum, r) => sum + (r.lecturasFallidas || 0), 0);
 
+  // Manejar click derecho
+  const handleContextMenu = (e, registrador) => {
+    e.preventDefault();
+    setMenuContextual({
+      visible: true,
+      x: e.clientX,
+      y: e.clientY,
+      registrador
+    });
+  };
+
+  // Cerrar menu al hacer click fuera
+  useEffect(() => {
+    const handleClickOutside = (e) => {
+      if (menuRef.current && !menuRef.current.contains(e.target)) {
+        setMenuContextual(prev => ({ ...prev, visible: false }));
+      }
+    };
+
+    if (menuContextual.visible) {
+      document.addEventListener('click', handleClickOutside);
+      return () => document.removeEventListener('click', handleClickOutside);
+    }
+  }, [menuContextual.visible]);
+
+  const handleVerLogs = () => {
+    if (menuContextual.registrador && onAbrirLogs) {
+      onAbrirLogs(menuContextual.registrador);
+    }
+    setMenuContextual(prev => ({ ...prev, visible: false }));
+  };
+
   return (
     <section className="registradores-section">
       <div className="section-header">
@@ -42,7 +79,6 @@ function RegistradoresList({ registradores }) {
       <div className="registradores-list">
         {registradores.length === 0 ? (
           <div className="empty-state">
-            <div className="empty-state-icon">📋</div>
             <p>No hay registradores configurados</p>
           </div>
         ) : (
@@ -53,15 +89,19 @@ function RegistradoresList({ registradores }) {
               <div className="registrador-nombre">Nombre</div>
               <div className="registrador-ip">IP:Puerto</div>
               <div className="registrador-registros">Registros</div>
-              <div className="registrador-intervalo">Intervalo</div>
-              <div className="registrador-countdown">Próxima</div>
+              <div className="registrador-intervalo">Interv</div>
+              <div className="registrador-countdown">Prox</div>
               <div className="registrador-lecturas">OK/ERR</div>
               <div>Estado</div>
             </div>
 
             {/* Filas de datos */}
             {registradores.map((reg) => (
-              <div key={reg.id} className="registrador-row">
+              <div
+                key={reg.id}
+                className="registrador-row"
+                onContextMenu={(e) => handleContextMenu(e, reg)}
+              >
                 <div className={`estado-icon ${reg.estado || 'inactivo'}`}>
                   {getEstadoIcon(reg.estado)}
                 </div>
@@ -100,6 +140,19 @@ function RegistradoresList({ registradores }) {
           </>
         )}
       </div>
+
+      {/* Menu contextual */}
+      {menuContextual.visible && (
+        <div
+          ref={menuRef}
+          className="context-menu"
+          style={{ top: menuContextual.y, left: menuContextual.x }}
+        >
+          <button className="context-menu-item" onClick={handleVerLogs}>
+            Ver logs
+          </button>
+        </div>
+      )}
     </section>
   );
 }

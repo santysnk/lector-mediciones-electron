@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import Header from './components/Header';
 import RegistradoresList from './components/RegistradoresList';
 import LogsList from './components/LogsList';
+import LogsRegistradores from './components/LogsRegistradores';
 import Footer from './components/Footer';
 
 function App() {
@@ -16,6 +17,10 @@ function App() {
   });
 
   const [contadores, setContadores] = useState({});
+
+  // Estado para pestanas dinamicas de logs por registrador
+  const [pestanasLogs, setPestanasLogs] = useState([]);
+  const [tabActivaRegistrador, setTabActivaRegistrador] = useState(null);
 
   // Cargar estado inicial
   useEffect(() => {
@@ -87,7 +92,7 @@ function App() {
     cleanups.push(window.electronAPI.onLog((log) => {
       setEstado(prev => ({
         ...prev,
-        logs: [log, ...prev.logs].slice(0, 100),
+        logs: [log, ...prev.logs].slice(0, 500),
       }));
     }));
 
@@ -116,6 +121,39 @@ function App() {
     proximaLectura: contadores[r.id] ?? r.proximaLectura,
   }));
 
+  // Abrir pestana de logs para un registrador
+  const handleAbrirLogsRegistrador = useCallback((registrador) => {
+    setPestanasLogs(prev => {
+      // Si ya existe la pestana, solo activarla
+      if (prev.some(p => p.id === registrador.id)) {
+        setTabActivaRegistrador(registrador.id);
+        return prev;
+      }
+      // Agregar nueva pestana
+      const nuevasPestanas = [...prev, { id: registrador.id, nombre: registrador.nombre }];
+      setTabActivaRegistrador(registrador.id);
+      return nuevasPestanas;
+    });
+  }, []);
+
+  // Cerrar pestana de logs
+  const handleCerrarTabRegistrador = useCallback((id) => {
+    setPestanasLogs(prev => {
+      const nuevas = prev.filter(p => p.id !== id);
+      // Si cerramos la tab activa, activar la anterior o ninguna
+      if (tabActivaRegistrador === id) {
+        const idx = prev.findIndex(p => p.id === id);
+        if (nuevas.length > 0) {
+          const nuevaActiva = nuevas[Math.max(0, idx - 1)]?.id || nuevas[0]?.id;
+          setTabActivaRegistrador(nuevaActiva);
+        } else {
+          setTabActivaRegistrador(null);
+        }
+      }
+      return nuevas;
+    });
+  }, [tabActivaRegistrador]);
+
   return (
     <div className="app-container">
       <Header
@@ -128,8 +166,25 @@ function App() {
       />
 
       <div className="main-content">
-        <RegistradoresList registradores={registradoresConContadores} />
-        <LogsList logs={estado.logs} registradores={registradoresConContadores} />
+        {/* Panel izquierdo: Registradores */}
+        <div className="panel-izquierdo">
+          <RegistradoresList
+            registradores={registradoresConContadores}
+            onAbrirLogs={handleAbrirLogsRegistrador}
+          />
+        </div>
+
+        {/* Panel derecho: Logs */}
+        <div className="panel-derecho">
+          <LogsList logs={estado.logs} registradores={registradoresConContadores} />
+          <LogsRegistradores
+            logs={estado.logs}
+            pestanasAbiertas={pestanasLogs}
+            tabActiva={tabActivaRegistrador}
+            onCambiarTab={setTabActivaRegistrador}
+            onCerrarTab={handleCerrarTabRegistrador}
+          />
+        </div>
       </div>
 
       <Footer
