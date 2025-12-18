@@ -1,6 +1,6 @@
 import { useRef, useState, useMemo } from 'react';
 
-function LogsList({ logs, registradores = [] }) {
+function LogsList({ logs, registradores = [], fontSize = 11, onZoomIn, onZoomOut }) {
   const listRef = useRef(null);
   const [tabActiva, setTabActiva] = useState('sistema');
 
@@ -34,6 +34,11 @@ function LogsList({ logs, registradores = [] }) {
     <section className="logs-section logs-sistema">
       <div className="section-header">
         <span>Logs ({logsFiltrados.length})</span>
+        <div className="zoom-controls">
+          <button className="btn-zoom" onClick={onZoomOut} title="Reducir fuente">-</button>
+          <span className="zoom-size">{fontSize}px</span>
+          <button className="btn-zoom" onClick={onZoomIn} title="Aumentar fuente">+</button>
+        </div>
       </div>
 
       <div className="logs-tabs">
@@ -53,7 +58,7 @@ function LogsList({ logs, registradores = [] }) {
         </button>
       </div>
 
-      <div className="logs-list" ref={listRef}>
+      <div className="logs-list" ref={listRef} style={{ fontSize: `${fontSize}px` }}>
         {logsFiltrados.length === 0 ? (
           <div className="empty-state">
             <p>Sin logs todavia...</p>

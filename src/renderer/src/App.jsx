@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import Header from './components/Header';
 import RegistradoresList from './components/RegistradoresList';
 import LogsList from './components/LogsList';
@@ -21,6 +21,18 @@ function App() {
   // Estado para pestanas dinamicas de logs por registrador
   const [pestanasLogs, setPestanasLogs] = useState([]);
   const [tabActivaRegistrador, setTabActivaRegistrador] = useState(null);
+
+  // Estado para tamanos de paneles (en porcentaje)
+  const [anchoIzquierdo, setAnchoIzquierdo] = useState(55);
+  const [altoLogsSistema, setAltoLogsSistema] = useState(50);
+
+  // Estado para tamano de fuente de logs
+  const [fontSizeLogs, setFontSizeLogs] = useState(11);
+
+  // Refs para el resize
+  const mainContentRef = useRef(null);
+  const panelDerechoRef = useRef(null);
+  const resizingRef = useRef(null);
 
   // Cargar estado inicial
   useEffect(() => {
@@ -103,6 +115,46 @@ function App() {
     return () => cleanups.forEach(cleanup => cleanup && cleanup());
   }, []);
 
+  // Manejadores de resize
+  const handleMouseDown = useCallback((tipo) => (e) => {
+    e.preventDefault();
+    resizingRef.current = tipo;
+    document.body.style.cursor = tipo === 'horizontal' ? 'col-resize' : 'row-resize';
+    document.body.style.userSelect = 'none';
+  }, []);
+
+  useEffect(() => {
+    const handleMouseMove = (e) => {
+      if (!resizingRef.current) return;
+
+      if (resizingRef.current === 'horizontal' && mainContentRef.current) {
+        const rect = mainContentRef.current.getBoundingClientRect();
+        const nuevoAncho = ((e.clientX - rect.left) / rect.width) * 100;
+        setAnchoIzquierdo(Math.max(25, Math.min(75, nuevoAncho)));
+      }
+
+      if (resizingRef.current === 'vertical' && panelDerechoRef.current) {
+        const rect = panelDerechoRef.current.getBoundingClientRect();
+        const nuevoAlto = ((e.clientY - rect.top) / rect.height) * 100;
+        setAltoLogsSistema(Math.max(20, Math.min(80, nuevoAlto)));
+      }
+    };
+
+    const handleMouseUp = () => {
+      resizingRef.current = null;
+      document.body.style.cursor = '';
+      document.body.style.userSelect = '';
+    };
+
+    document.addEventListener('mousemove', handleMouseMove);
+    document.addEventListener('mouseup', handleMouseUp);
+
+    return () => {
+      document.removeEventListener('mousemove', handleMouseMove);
+      document.removeEventListener('mouseup', handleMouseUp);
+    };
+  }, []);
+
   const handleRecargar = useCallback(async () => {
     await window.electronAPI.recargar();
   }, []);
@@ -124,12 +176,10 @@ function App() {
   // Abrir pestana de logs para un registrador
   const handleAbrirLogsRegistrador = useCallback((registrador) => {
     setPestanasLogs(prev => {
-      // Si ya existe la pestana, solo activarla
       if (prev.some(p => p.id === registrador.id)) {
         setTabActivaRegistrador(registrador.id);
         return prev;
       }
-      // Agregar nueva pestana
       const nuevasPestanas = [...prev, { id: registrador.id, nombre: registrador.nombre }];
       setTabActivaRegistrador(registrador.id);
       return nuevasPestanas;
@@ -140,7 +190,6 @@ function App() {
   const handleCerrarTabRegistrador = useCallback((id) => {
     setPestanasLogs(prev => {
       const nuevas = prev.filter(p => p.id !== id);
-      // Si cerramos la tab activa, activar la anterior o ninguna
       if (tabActivaRegistrador === id) {
         const idx = prev.findIndex(p => p.id === id);
         if (nuevas.length > 0) {
@@ -154,6 +203,15 @@ function App() {
     });
   }, [tabActivaRegistrador]);
 
+  // Handlers para zoom de fuente
+  const handleZoomIn = useCallback(() => {
+    setFontSizeLogs(prev => Math.min(18, prev + 1));
+  }, []);
+
+  const handleZoomOut = useCallback(() => {
+    setFontSizeLogs(prev => Math.max(8, prev - 1));
+  }, []);
+
   return (
     <div className="app-container">
       <Header
@@ -165,25 +223,55 @@ function App() {
         onTogglePolling={handleTogglePolling}
       />
 
-      <div className="main-content">
+      <div className="main-content" ref={mainContentRef}>
         {/* Panel izquierdo: Registradores */}
-        <div className="panel-izquierdo">
+        <div className="panel-izquierdo" style={{ width: `${anchoIzquierdo}%` }}>
           <RegistradoresList
             registradores={registradoresConContadores}
             onAbrirLogs={handleAbrirLogsRegistrador}
           />
         </div>
 
+        {/* Resizer horizontal */}
+        <div
+          className="resizer resizer-horizontal"
+          onMouseDown={handleMouseDown('horizontal')}
+        />
+
         {/* Panel derecho: Logs */}
-        <div className="panel-derecho">
-          <LogsList logs={estado.logs} registradores={registradoresConContadores} />
-          <LogsRegistradores
-            logs={estado.logs}
-            pestanasAbiertas={pestanasLogs}
-            tabActiva={tabActivaRegistrador}
-            onCambiarTab={setTabActivaRegistrador}
-            onCerrarTab={handleCerrarTabRegistrador}
+        <div
+          className="panel-derecho"
+          ref={panelDerechoRef}
+          style={{ width: `${100 - anchoIzquierdo}%` }}
+        >
+          <div style={{ height: `${altoLogsSistema}%`, display: 'flex', flexDirection: 'column' }}>
+            <LogsList
+              logs={estado.logs}
+              registradores={registradoresConContadores}
+              fontSize={fontSizeLogs}
+              onZoomIn={handleZoomIn}
+              onZoomOut={handleZoomOut}
+            />
+          </div>
+
+          {/* Resizer vertical */}
+          <div
+            className="resizer resizer-vertical"
+            onMouseDown={handleMouseDown('vertical')}
           />
+
+          <div style={{ height: `${100 - altoLogsSistema}%`, display: 'flex', flexDirection: 'column' }}>
+            <LogsRegistradores
+              logs={estado.logs}
+              pestanasAbiertas={pestanasLogs}
+              tabActiva={tabActivaRegistrador}
+              onCambiarTab={setTabActivaRegistrador}
+              onCerrarTab={handleCerrarTabRegistrador}
+              fontSize={fontSizeLogs}
+              onZoomIn={handleZoomIn}
+              onZoomOut={handleZoomOut}
+            />
+          </div>
         </div>
       </div>
 

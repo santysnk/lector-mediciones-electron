@@ -1,6 +1,6 @@
 import { useRef, useMemo } from 'react';
 
-function LogsRegistradores({ logs, pestanasAbiertas, tabActiva, onCambiarTab, onCerrarTab }) {
+function LogsRegistradores({ logs, pestanasAbiertas, tabActiva, onCambiarTab, onCerrarTab, fontSize = 11, onZoomIn, onZoomOut }) {
   const listRef = useRef(null);
 
   const getLogIcon = (tipo) => {
@@ -35,6 +35,11 @@ function LogsRegistradores({ logs, pestanasAbiertas, tabActiva, onCambiarTab, on
       <section className="logs-registradores-section">
         <div className="section-header">
           <span>Logs por Registrador</span>
+          <div className="zoom-controls">
+            <button className="btn-zoom" onClick={onZoomOut} title="Reducir fuente">-</button>
+            <span className="zoom-size">{fontSize}px</span>
+            <button className="btn-zoom" onClick={onZoomIn} title="Aumentar fuente">+</button>
+          </div>
         </div>
         <div className="logs-empty-hint">
           <p>Click derecho en un registrador para ver sus logs</p>
@@ -47,6 +52,11 @@ function LogsRegistradores({ logs, pestanasAbiertas, tabActiva, onCambiarTab, on
     <section className="logs-registradores-section">
       <div className="section-header">
         <span>Logs ({logsFiltrados.length})</span>
+        <div className="zoom-controls">
+          <button className="btn-zoom" onClick={onZoomOut} title="Reducir fuente">-</button>
+          <span className="zoom-size">{fontSize}px</span>
+          <button className="btn-zoom" onClick={onZoomIn} title="Aumentar fuente">+</button>
+        </div>
       </div>
 
       <div className="logs-tabs">
@@ -71,7 +81,7 @@ function LogsRegistradores({ logs, pestanasAbiertas, tabActiva, onCambiarTab, on
         ))}
       </div>
 
-      <div className="logs-list" ref={listRef}>
+      <div className="logs-list" ref={listRef} style={{ fontSize: `${fontSize}px` }}>
         {logsFiltrados.length === 0 ? (
           <div className="empty-state">
             <p>Sin logs para este registrador...</p>

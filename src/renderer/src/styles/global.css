@@ -573,3 +573,58 @@ body {
   margin-bottom: 12px;
   opacity: 0.5;
 }
+
+/* Resizers para paneles redimensionables */
+.resizer {
+  background: var(--border-color);
+  flex-shrink: 0;
+  transition: background 0.15s;
+}
+
+.resizer:hover {
+  background: var(--accent-blue);
+}
+
+.resizer-horizontal {
+  width: 5px;
+  cursor: col-resize;
+}
+
+.resizer-vertical {
+  height: 5px;
+  cursor: row-resize;
+}
+
+/* Controles de zoom de fuente */
+.zoom-controls {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.btn-zoom {
+  width: 20px;
+  height: 20px;
+  border: none;
+  border-radius: 3px;
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: bold;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.15s;
+}
+
+.btn-zoom:hover {
+  background: var(--accent-blue);
+}
+
+.zoom-size {
+  font-size: 10px;
+  color: var(--text-secondary);
+  min-width: 28px;
+  text-align: center;
+}
