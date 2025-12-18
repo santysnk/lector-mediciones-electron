@@ -26,8 +26,9 @@ function App() {
   const [anchoIzquierdo, setAnchoIzquierdo] = useState(55);
   const [altoLogsSistema, setAltoLogsSistema] = useState(50);
 
-  // Estado para tamano de fuente de logs
-  const [fontSizeLogs, setFontSizeLogs] = useState(11);
+  // Estado para tamano de fuente de logs (independiente para cada contenedor)
+  const [fontSizeSistema, setFontSizeSistema] = useState(11);
+  const [fontSizeRegistrador, setFontSizeRegistrador] = useState(11);
 
   // Refs para el resize
   const mainContentRef = useRef(null);
@@ -203,13 +204,27 @@ function App() {
     });
   }, [tabActivaRegistrador]);
 
-  // Handlers para zoom de fuente
-  const handleZoomIn = useCallback(() => {
-    setFontSizeLogs(prev => Math.min(18, prev + 1));
+  // Handlers para zoom de fuente - Contenedor Sistema
+  const handleZoomInSistema = useCallback(() => {
+    setFontSizeSistema(prev => Math.min(18, prev + 1));
   }, []);
 
-  const handleZoomOut = useCallback(() => {
-    setFontSizeLogs(prev => Math.max(8, prev - 1));
+  const handleZoomOutSistema = useCallback(() => {
+    setFontSizeSistema(prev => Math.max(8, prev - 1));
+  }, []);
+
+  // Handlers para zoom de fuente - Contenedor Registrador
+  const handleZoomInRegistrador = useCallback(() => {
+    setFontSizeRegistrador(prev => Math.min(18, prev + 1));
+  }, []);
+
+  const handleZoomOutRegistrador = useCallback(() => {
+    setFontSizeRegistrador(prev => Math.max(8, prev - 1));
+  }, []);
+
+  // Handler para cerrar la aplicacion
+  const handleCerrarAgente = useCallback(() => {
+    window.electronAPI.cerrarAgente();
   }, []);
 
   return (
@@ -221,6 +236,7 @@ function App() {
         pollingActivo={estado.pollingActivo}
         onRecargar={handleRecargar}
         onTogglePolling={handleTogglePolling}
+        onCerrar={handleCerrarAgente}
       />
 
       <div className="main-content" ref={mainContentRef}>
@@ -248,9 +264,9 @@ function App() {
             <LogsList
               logs={estado.logs}
               registradores={registradoresConContadores}
-              fontSize={fontSizeLogs}
-              onZoomIn={handleZoomIn}
-              onZoomOut={handleZoomOut}
+              fontSize={fontSizeSistema}
+              onZoomIn={handleZoomInSistema}
+              onZoomOut={handleZoomOutSistema}
             />
           </div>
 
@@ -267,9 +283,9 @@ function App() {
               tabActiva={tabActivaRegistrador}
               onCambiarTab={setTabActivaRegistrador}
               onCerrarTab={handleCerrarTabRegistrador}
-              fontSize={fontSizeLogs}
-              onZoomIn={handleZoomIn}
-              onZoomOut={handleZoomOut}
+              fontSize={fontSizeRegistrador}
+              onZoomIn={handleZoomInRegistrador}
+              onZoomOut={handleZoomOutRegistrador}
             />
           </div>
         </div>

@@ -1,4 +1,4 @@
-function Header({ conectado, agente, workspace, pollingActivo, onRecargar, onTogglePolling }) {
+function Header({ conectado, agente, workspace, pollingActivo, onRecargar, onTogglePolling, onCerrar }) {
   return (
     <header className="header">
       <div className="header-left">
@@ -36,6 +36,10 @@ function Header({ conectado, agente, workspace, pollingActivo, onRecargar, onTog
           onClick={onTogglePolling}
         >
           {pollingActivo ? 'Detener' : 'Iniciar'}
+        </button>
+
+        <button className="btn btn-danger" onClick={onCerrar} title="Cerrar agente">
+          Cerrar
         </button>
       </div>
     </header>

@@ -723,6 +723,7 @@ function configurarIPC() {
 
   ipcMain.handle('iniciar-polling', () => { iniciarPolling(); return { ok: true }; });
   ipcMain.handle('detener-polling', () => { detenerPolling(); return { ok: true }; });
+  ipcMain.handle('cerrar-agente', () => { tray = null; app.quit(); });
   ipcMain.handle('get-config', () => ({
     backendUrl: BACKEND_URL,
     claveSecreta: CLAVE_SECRETA ? '********' : null,
@@ -773,7 +774,8 @@ async function iniciarAgente() {
       enviarARenderer('agente', agente);
       agregarLog(`Autenticado: ${agente.nombre}`, 'exito');
       await cargarRegistradores();
-      if (registradoresCache.length > 0) iniciarPolling();
+      // No iniciar polling automaticamente - el usuario debe hacer click en "Iniciar"
+      agregarLog('Listo. Presione "Iniciar" para comenzar el polling.', 'info');
     },
     onVinculado: (workspace) => {
       estadoApp.workspace = workspace;

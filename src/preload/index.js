@@ -12,6 +12,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
   recargar: () => ipcRenderer.invoke('recargar'),
   iniciarPolling: () => ipcRenderer.invoke('iniciar-polling'),
   detenerPolling: () => ipcRenderer.invoke('detener-polling'),
+  cerrarAgente: () => ipcRenderer.invoke('cerrar-agente'),
 
   // Configuración
   getConfig: () => ipcRenderer.invoke('get-config'),
