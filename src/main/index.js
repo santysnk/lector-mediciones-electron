@@ -160,6 +160,12 @@ async function enviarHeartbeat() {
   if (!token) return;
   try {
     await fetchBackend('/agente/heartbeat', { method: 'POST', body: JSON.stringify({ version: '1.0.0' }) });
+    // Si el heartbeat tuvo exito y estabamos desconectados, reconectar
+    if (!conectado) {
+      conectado = true;
+      restLog('Conexión recuperada', 'exito');
+      if (restCallbacks.onConectado) restCallbacks.onConectado();
+    }
   } catch (error) {
     restLog(`Error heartbeat: ${error.message}`, 'advertencia');
   }
