@@ -729,7 +729,20 @@ function configurarIPC() {
 
   ipcMain.handle('iniciar-polling', () => { iniciarPolling(); return { ok: true }; });
   ipcMain.handle('detener-polling', () => { detenerPolling(); return { ok: true }; });
-  ipcMain.handle('cerrar-agente', () => { tray = null; app.quit(); });
+  ipcMain.handle('cerrar-agente', () => {
+    // Limpiar todo antes de cerrar
+    detenerPolling();
+    cerrarConexion();
+    if (tray) {
+      tray.destroy();
+      tray = null;
+    }
+    // Forzar cierre de todas las ventanas
+    BrowserWindow.getAllWindows().forEach(win => win.destroy());
+    app.quit();
+    // Si app.quit() no cierra todo, forzar con exit
+    setTimeout(() => process.exit(0), 500);
+  });
   ipcMain.handle('get-config', () => ({
     backendUrl: BACKEND_URL,
     claveSecreta: CLAVE_SECRETA ? '********' : null,
