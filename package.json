@@ -1,0 +1,42 @@
+{
+  "name": "lector-mediciones-electron",
+  "version": "1.0.0",
+  "description": "Agente de lecturas Modbus TCP - Aplicacion de escritorio",
+  "main": "./out/main/index.js",
+  "author": "RelayWatch",
+  "license": "MIT",
+  "scripts": {
+    "dev": "electron-vite dev",
+    "build": "electron-vite build",
+    "start": "electron-vite preview",
+    "build:win": "npm run build && electron-builder --win --config"
+  },
+  "dependencies": {
+    "dotenv": "^17.2.3",
+    "modbus-serial": "^8.0.23"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^5.1.2",
+    "electron": "^39.2.7",
+    "electron-builder": "^26.0.12",
+    "electron-vite": "^5.0.0",
+    "react": "^19.2.3",
+    "react-dom": "^19.2.3",
+    "vite": "^7.3.0"
+  },
+  "build": {
+    "appId": "com.relaywatch.agente",
+    "productName": "RelayWatch Agente",
+    "directories": {
+      "output": "dist"
+    },
+    "win": {
+      "target": ["nsis"],
+      "icon": "resources/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true
+    }
+  }
+}
