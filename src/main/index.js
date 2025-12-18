@@ -8,11 +8,8 @@ const fs = require('fs');
 const ModbusRTU = require('modbus-serial');
 
 // Cargar variables de entorno
-require('dotenv').config({
-  path: app.isPackaged
-    ? path.join(process.resourcesPath, '.env')
-    : path.join(__dirname, '../../.env')
-});
+const envPath = path.join(__dirname, '../../.env');
+require('dotenv').config({ path: envPath, quiet: true });
 
 // ============================================================================
 // CLIENTE MODBUS
@@ -290,12 +287,13 @@ let registradoresCache = [];
 let cicloActivo = false;
 let intervalosLectura = new Map();
 let contadoresProxLectura = new Map();
+let contadoresLecturas = new Map(); // { regId: { exitosas: 0, fallidas: 0 } }
 let contadorIntervalId = null;
 let testsEnProceso = new Set();
 let pollingCallbacks = {};
 
-function pollingLog(mensaje, tipo = 'info') {
-  if (pollingCallbacks.onLog) pollingCallbacks.onLog(mensaje, tipo);
+function pollingLog(mensaje, tipo = 'info', registradorId = null) {
+  if (pollingCallbacks.onLog) pollingCallbacks.onLog(mensaje, tipo, registradorId);
 }
 
 function notificarCambio(tipo, datos) {
@@ -338,6 +336,24 @@ async function cargarRegistradores() {
   }
 }
 
+function incrementarContadorLectura(regId, tipo) {
+  if (!contadoresLecturas.has(regId)) {
+    contadoresLecturas.set(regId, { exitosas: 0, fallidas: 0 });
+  }
+  const contadores = contadoresLecturas.get(regId);
+  if (tipo === 'exitosa') {
+    contadores.exitosas++;
+  } else {
+    contadores.fallidas++;
+  }
+  // Actualizar el registrador en cache
+  const reg = registradoresCache.find(r => r.id === regId);
+  if (reg) {
+    reg.lecturasExitosas = contadores.exitosas;
+    reg.lecturasFallidas = contadores.fallidas;
+  }
+}
+
 async function leerRegistrador(registrador) {
   const inicio = Date.now();
   try {
@@ -356,11 +372,13 @@ async function leerRegistrador(registrador) {
     }]);
 
     if (resultado.ok) {
+      incrementarContadorLectura(registrador.id, 'exitosa');
       actualizarEstadoReg(registrador.id, 'activo');
-      pollingLog(`${registrador.nombre}: ${valores.length} regs (${tiempoMs}ms)`, 'exito');
+      pollingLog(`${registrador.nombre}: ${valores.length} regs (${tiempoMs}ms)`, 'exito', registrador.id);
     } else {
+      incrementarContadorLectura(registrador.id, 'fallida');
       actualizarEstadoReg(registrador.id, 'error');
-      pollingLog(`${registrador.nombre}: Error enviando`, 'error');
+      pollingLog(`${registrador.nombre}: Error enviando`, 'error', registrador.id);
     }
     return { exito: true, valores };
   } catch (error) {
@@ -371,8 +389,9 @@ async function leerRegistrador(registrador) {
         exito: false, error: error.message, timestamp: new Date().toISOString(),
       }]);
     } catch (e) { }
+    incrementarContadorLectura(registrador.id, 'fallida');
     actualizarEstadoReg(registrador.id, 'error');
-    pollingLog(`${registrador.nombre}: ${error.message}`, 'error');
+    pollingLog(`${registrador.nombre}: ${error.message}`, 'error', registrador.id);
     return { exito: false, error: error.message };
   }
 }
@@ -382,7 +401,13 @@ function actualizarEstadoReg(regId, estado, proximaLectura = null) {
   if (reg) {
     reg.estado = estado;
     if (proximaLectura !== null) reg.proximaLectura = proximaLectura;
-    notificarCambio('registrador', { id: regId, estado, proximaLectura: reg.proximaLectura });
+    notificarCambio('registrador', {
+      id: regId,
+      estado,
+      proximaLectura: reg.proximaLectura,
+      lecturasExitosas: reg.lecturasExitosas || 0,
+      lecturasFallidas: reg.lecturasFallidas || 0,
+    });
   }
 }
 
@@ -401,40 +426,47 @@ function iniciarPolling() {
     return;
   }
 
-  pollingLog(`Iniciando polling de ${registradoresActivos.length} registrador(es)...`, 'ciclo');
+  // Calcular delay escalonado global:
+  // promedio de intervalos / cantidad de registradores, redondeado hacia arriba
+  const sumaIntervalos = registradoresActivos.reduce((sum, r) => sum + (r.intervalo_segundos || 60), 0);
+  const promedioIntervalo = sumaIntervalos / registradoresActivos.length;
+  const delayEntreRegistradores = Math.ceil(promedioIntervalo / registradoresActivos.length);
 
-  const porIp = new Map();
-  for (const reg of registradoresActivos) {
-    if (!porIp.has(reg.ip)) porIp.set(reg.ip, []);
-    porIp.get(reg.ip).push(reg);
-  }
+  pollingLog(`Iniciando polling de ${registradoresActivos.length} registrador(es) con ${delayEntreRegistradores}s entre cada uno...`, 'ciclo');
 
-  for (const [ip, regs] of porIp) {
-    if (regs.length > 1) pollingLog(`IP ${ip}: ${regs.length} registradores, escalonando`, 'info');
+  // Iniciar cada registrador con delay escalonado
+  registradoresActivos.forEach((reg, index) => {
+    const intervaloSegundos = reg.intervalo_segundos || 60;
+    const intervaloMs = intervaloSegundos * 1000;
+    const delayInicialMs = index * delayEntreRegistradores * 1000;
+    const delayInicialSegundos = index * delayEntreRegistradores;
 
-    regs.forEach((reg, index) => {
-      const intervaloSegundos = reg.intervalo_segundos || 60;
-      const intervaloMs = intervaloSegundos * 1000;
-      const delayMs = index === 0 ? 0 : Math.floor((intervaloSegundos * 1000 * index) / regs.length);
-      const delaySegundos = Math.ceil(delayMs / 1000);
+    // Establecer contador inicial (delay + intervalo para los que esperan)
+    const proximaLectura = delayInicialSegundos > 0 ? delayInicialSegundos : intervaloSegundos;
+    contadoresProxLectura.set(reg.id, proximaLectura);
+    actualizarEstadoReg(reg.id, 'activo', proximaLectura);
 
-      contadoresProxLectura.set(reg.id, delaySegundos || intervaloSegundos);
-      actualizarEstadoReg(reg.id, reg.estado, delaySegundos || intervaloSegundos);
+    if (delayInicialMs > 0) {
+      pollingLog(`${reg.nombre}: primera lectura en ${delayInicialSegundos}s`, 'info');
+      setTimeout(() => {
+        if (!cicloActivo) return;
+        const regActual = registradoresCache.find(r => r.id === reg.id);
+        if (regActual && regActual.activo) {
+          leerRegistrador(regActual);
+          contadoresProxLectura.set(reg.id, intervaloSegundos);
+          actualizarEstadoReg(reg.id, 'activo', intervaloSegundos);
+        }
+      }, delayInicialMs);
+    } else {
+      // Primer registrador lee inmediatamente
+      leerRegistrador(reg);
+      contadoresProxLectura.set(reg.id, intervaloSegundos);
+    }
 
-      if (delayMs > 0) {
-        setTimeout(() => {
-          if (!cicloActivo) return;
-          const regActual = registradoresCache.find(r => r.id === reg.id);
-          if (regActual && regActual.activo) {
-            leerRegistrador(regActual);
-            contadoresProxLectura.set(reg.id, intervaloSegundos);
-            actualizarEstadoReg(reg.id, 'activo', intervaloSegundos);
-          }
-        }, delayMs);
-      } else {
-        leerRegistrador(reg);
-      }
-
+    // Configurar intervalo para lecturas subsiguientes
+    // El intervalo empieza después del delay inicial
+    setTimeout(() => {
+      if (!cicloActivo) return;
       const intervalId = setInterval(() => {
         if (cicloActivo) {
           const regActual = registradoresCache.find(r => r.id === reg.id);
@@ -445,10 +477,9 @@ function iniciarPolling() {
           }
         }
       }, intervaloMs);
-
       intervalosLectura.set(reg.id, intervalId);
-    });
-  }
+    }, delayInicialMs);
+  });
 
   asegurarContadorGlobal();
   notificarCambio('pollingActivo', true);
@@ -599,9 +630,9 @@ let estadoApp = {
 
 const MAX_LOGS = 100;
 
-function agregarLog(mensaje, tipo = 'info') {
+function agregarLog(mensaje, tipo = 'info', registradorId = null) {
   const timestamp = new Date().toLocaleTimeString();
-  const log = { timestamp, mensaje, tipo };
+  const log = { timestamp, mensaje, tipo, registradorId };
   estadoApp.logs.unshift(log);
   if (estadoApp.logs.length > MAX_LOGS) estadoApp.logs.pop();
   enviarARenderer('log', log);
@@ -706,7 +737,7 @@ async function iniciarAgente() {
   }
 
   pollingCallbacks = {
-    onLog: (mensaje, tipo) => agregarLog(mensaje, tipo),
+    onLog: (mensaje, tipo, registradorId) => agregarLog(mensaje, tipo, registradorId),
     onEstadoCambiado: (tipoCambio, datos) => {
       switch (tipoCambio) {
         case 'registradores':

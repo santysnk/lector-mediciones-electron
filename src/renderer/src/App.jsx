@@ -68,7 +68,13 @@ function App() {
         ...prev,
         registradores: prev.registradores.map(r =>
           r.id === data.id
-            ? { ...r, estado: data.estado, proximaLectura: data.proximaLectura }
+            ? {
+                ...r,
+                estado: data.estado,
+                proximaLectura: data.proximaLectura,
+                lecturasExitosas: data.lecturasExitosas,
+                lecturasFallidas: data.lecturasFallidas,
+              }
             : r
         ),
       }));
@@ -123,7 +129,7 @@ function App() {
 
       <div className="main-content">
         <RegistradoresList registradores={registradoresConContadores} />
-        <LogsList logs={estado.logs} />
+        <LogsList logs={estado.logs} registradores={registradoresConContadores} />
       </div>
 
       <Footer
