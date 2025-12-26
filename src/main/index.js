@@ -2,7 +2,7 @@
 // Punto de entrada del proceso principal de Electron
 // Todo el código del agente consolidado en un solo archivo
 
-const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification } = require('electron');
+const { app, BrowserWindow, ipcMain, Tray, Menu, nativeImage, Notification, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const ModbusRTU = require('modbus-serial');
@@ -10,6 +10,171 @@ const ModbusRTU = require('modbus-serial');
 // Cargar variables de entorno
 const envPath = path.join(__dirname, '../../.env');
 require('dotenv').config({ path: envPath, quiet: true });
+
+// ============================================================================
+// SISTEMA DE INSTANCIA ÚNICA
+// ============================================================================
+
+const LOCK_FILE = path.join(app.getPath('userData'), 'agent.lock');
+
+/**
+ * Verifica si un proceso con el PID dado está corriendo
+ */
+function procesoExiste(pid) {
+  try {
+    process.kill(pid, 0); // Signal 0 no mata, solo verifica
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * Intenta matar un proceso por PID
+ */
+function matarProceso(pid) {
+  try {
+    if (process.platform === 'win32') {
+      require('child_process').execSync(`taskkill /PID ${pid} /F`, { stdio: 'ignore' });
+    } else {
+      process.kill(pid, 'SIGKILL');
+    }
+    return true;
+  } catch (e) {
+    return false;
+  }
+}
+
+/**
+ * Crea el archivo de lock con el PID actual
+ */
+function crearLockFile() {
+  try {
+    fs.writeFileSync(LOCK_FILE, process.pid.toString(), 'utf8');
+  } catch (e) {
+    console.error('[Lock] Error creando archivo de lock:', e.message);
+  }
+}
+
+/**
+ * Elimina el archivo de lock
+ */
+function eliminarLockFile() {
+  try {
+    if (fs.existsSync(LOCK_FILE)) {
+      fs.unlinkSync(LOCK_FILE);
+    }
+  } catch (e) {
+    console.error('[Lock] Error eliminando archivo de lock:', e.message);
+  }
+}
+
+/**
+ * Lee el PID del archivo de lock
+ */
+function leerPidDeLock() {
+  try {
+    if (fs.existsSync(LOCK_FILE)) {
+      const contenido = fs.readFileSync(LOCK_FILE, 'utf8').trim();
+      const pid = parseInt(contenido, 10);
+      return isNaN(pid) ? null : pid;
+    }
+  } catch (e) {
+    console.error('[Lock] Error leyendo archivo de lock:', e.message);
+  }
+  return null;
+}
+
+/**
+ * Maneja el caso de instancia duplicada
+ * Retorna true si se resolvió y podemos continuar, false si debemos salir
+ */
+async function manejarInstanciaDuplicada() {
+  const pidAnterior = leerPidDeLock();
+
+  // Si hay un PID en el lock file, verificar si ese proceso sigue corriendo
+  if (pidAnterior && procesoExiste(pidAnterior)) {
+    // El proceso anterior sigue corriendo - mostrar diálogo
+    const resultado = await dialog.showMessageBox({
+      type: 'warning',
+      title: 'Agente ya en ejecución',
+      message: 'Ya existe una instancia del agente en ejecución.',
+      detail: `Se detectó otro proceso del agente (PID: ${pidAnterior}).\n\n¿Desea cerrar la instancia anterior e iniciar una nueva?`,
+      buttons: ['Cerrar instancia anterior e iniciar', 'Cancelar'],
+      defaultId: 1,
+      cancelId: 1,
+    });
+
+    if (resultado.response === 0) {
+      // Intentar matar el proceso anterior
+      const exito = matarProceso(pidAnterior);
+
+      if (exito) {
+        // Esperar un momento para que el proceso termine
+        await new Promise(resolve => setTimeout(resolve, 1000));
+
+        // Verificar que realmente murió
+        if (!procesoExiste(pidAnterior)) {
+          eliminarLockFile();
+          return true; // Podemos continuar
+        }
+      }
+
+      // No se pudo cerrar el proceso
+      await dialog.showMessageBox({
+        type: 'error',
+        title: 'Error al cerrar instancia',
+        message: 'No se pudo cerrar la instancia anterior del agente.',
+        detail: `El proceso (PID: ${pidAnterior}) no pudo ser terminado.\n\nPor favor, ciérrelo manualmente desde el Administrador de Tareas y vuelva a intentar.`,
+        buttons: ['Aceptar'],
+      });
+      return false;
+    } else {
+      // Usuario canceló
+      return false;
+    }
+  } else if (pidAnterior) {
+    // El PID existe en el lock pero el proceso no está corriendo (cierre incorrecto anterior)
+    // Limpiar el lock file huérfano
+    eliminarLockFile();
+    return true;
+  }
+
+  return true; // No había lock file
+}
+
+// Solicitar lock de instancia única de Electron
+const gotTheLock = app.requestSingleInstanceLock();
+
+if (!gotTheLock) {
+  // Otra instancia ya tiene el lock - manejar asincrónicamente
+  app.whenReady().then(async () => {
+    const puedeIniciar = await manejarInstanciaDuplicada();
+    if (!puedeIniciar) {
+      app.quit();
+      return;
+    }
+    // Si llegamos aquí, el lock debería estar disponible ahora
+    // pero Electron no lo reasignará, así que forzamos el inicio de todos modos
+    inicializarApp();
+  });
+} else {
+  // Tenemos el lock - configurar el listener para cuando otra instancia intente iniciar
+  app.on('second-instance', (event, commandLine, workingDirectory) => {
+    // Otra instancia intentó iniciar - mostrar nuestra ventana
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.show();
+      mainWindow.focus();
+    }
+  });
+
+  // Iniciar normalmente
+  app.whenReady().then(() => {
+    crearLockFile();
+    inicializarApp();
+  });
+}
 
 // ============================================================================
 // CLIENTE MODBUS
@@ -850,6 +1015,7 @@ function configurarIPC() {
     // Limpiar todo antes de cerrar
     detenerPolling();
     cerrarConexion();
+    eliminarLockFile(); // Limpiar lock file
     if (tray) {
       tray.destroy();
       tray = null;
@@ -932,7 +1098,11 @@ async function iniciarAgente() {
   });
 }
 
-app.whenReady().then(() => {
+/**
+ * Función principal de inicialización de la aplicación
+ * Se llama después de verificar que no hay otra instancia
+ */
+function inicializarApp() {
   configurarIPC();
   crearVentana();
   crearTray();
@@ -941,7 +1111,7 @@ app.whenReady().then(() => {
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) crearVentana();
   });
-});
+}
 
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin' && !tray) app.quit();
@@ -950,4 +1120,20 @@ app.on('window-all-closed', () => {
 app.on('before-quit', () => {
   detenerPolling();
   cerrarConexion();
+  eliminarLockFile(); // Limpiar lock file al cerrar
+});
+
+// También limpiar en caso de salida forzada
+process.on('exit', () => {
+  eliminarLockFile();
+});
+
+process.on('SIGINT', () => {
+  eliminarLockFile();
+  process.exit(0);
+});
+
+process.on('SIGTERM', () => {
+  eliminarLockFile();
+  process.exit(0);
 });
