@@ -69,22 +69,24 @@ async function testConexionModbus({ ip, puerto, unitId = 1, indiceInicial = 0, c
 }
 
 // ============================================================================
-// SERVICIO REST
+// SERVICIO REST Y SSE
 // ============================================================================
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 const CLAVE_SECRETA = process.env.CLAVE_SECRETA;
 const CONFIG_POLL_INTERVAL = 30000;  // 30s - la configuración no cambia frecuentemente
-const TESTS_POLL_INTERVAL = 15000;   // 15s - los tests son acciones ocasionales
 const HEARTBEAT_INTERVAL = 30000;    // 30s - mantener
+const SSE_RECONNECT_DELAY = 5000;    // 5s - delay antes de reconectar SSE
 
 let token = null;
 let agenteData = null;
 let workspacesData = [];
 let conectado = false;
+let sseConectado = false;
 let heartbeatIntervalId = null;
 let configPollIntervalId = null;
-let testsPollIntervalId = null;
+let sseAbortController = null;
+let sseReconnectTimeoutId = null;
 let restCallbacks = {};
 let ultimaConfigHash = null;
 
@@ -186,11 +188,6 @@ async function enviarLecturas(lecturas) {
   return await fetchBackend('/agente/lecturas', { method: 'POST', body: JSON.stringify({ lecturas }) });
 }
 
-async function obtenerTestsPendientes() {
-  if (!token) throw new Error('No autenticado');
-  return await fetchBackend('/agente/tests-pendientes', { method: 'GET' }) || [];
-}
-
 async function reportarResultadoTest(testId, resultado) {
   if (!token) throw new Error('No autenticado');
   return await fetchBackend(`/agente/tests/${testId}/resultado`, { method: 'POST', body: JSON.stringify(resultado) });
@@ -220,22 +217,162 @@ async function pollConfiguracion() {
   }
 }
 
-async function pollTestsPendientes() {
-  if (!token) return;
+// ============================================================================
+// SSE (Server-Sent Events) - Recibir comandos en tiempo real
+// ============================================================================
+
+async function conectarSSE() {
+  if (!token) {
+    restLog('SSE: No hay token, esperando autenticación...', 'advertencia');
+    return;
+  }
+
+  // Cancelar conexión anterior si existe
+  if (sseAbortController) {
+    sseAbortController.abort();
+  }
+
+  sseAbortController = new AbortController();
+  const url = `${BACKEND_URL}/api/agente/eventos`;
+
+  restLog('SSE: Conectando...', 'info');
+
   try {
-    const tests = await obtenerTestsPendientes();
-    if (tests && tests.length > 0) {
-      for (const test of tests) {
-        restLog(`Test pendiente: ${test.ip}:${test.puerto}`, 'info');
-        if (restCallbacks.onTestPendiente) restCallbacks.onTestPendiente(test);
+    const response = await fetch(url, {
+      method: 'GET',
+      headers: {
+        'Authorization': `Bearer ${token}`,
+        'Accept': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+      },
+      signal: sseAbortController.signal,
+    });
+
+    if (!response.ok) {
+      throw new Error(`HTTP ${response.status}`);
+    }
+
+    sseConectado = true;
+    restLog('SSE: Conectado', 'exito');
+
+    // Leer el stream de eventos
+    const reader = response.body.getReader();
+    const decoder = new TextDecoder();
+    let buffer = '';
+
+    while (true) {
+      const { done, value } = await reader.read();
+
+      if (done) {
+        restLog('SSE: Conexión cerrada por el servidor', 'advertencia');
+        break;
+      }
+
+      buffer += decoder.decode(value, { stream: true });
+
+      // Procesar eventos completos (terminan con \n\n)
+      const eventos = buffer.split('\n\n');
+      buffer = eventos.pop() || ''; // El último puede estar incompleto
+
+      for (const evento of eventos) {
+        if (evento.trim()) {
+          procesarEventoSSE(evento);
+        }
       }
     }
   } catch (error) {
-    if (!error.message.includes('No autenticado')) {
-      restLog(`Error tests: ${error.message}`, 'advertencia');
+    if (error.name === 'AbortError') {
+      restLog('SSE: Conexión cancelada', 'info');
+      return; // No reconectar si fue cancelado intencionalmente
+    }
+    restLog(`SSE: Error - ${error.message}`, 'error');
+  } finally {
+    sseConectado = false;
+  }
+
+  // Reconectar después de un delay
+  programarReconexionSSE();
+}
+
+function procesarEventoSSE(eventoRaw) {
+  const lineas = eventoRaw.split('\n');
+  let tipoEvento = 'message';
+  let datos = '';
+
+  for (const linea of lineas) {
+    if (linea.startsWith('event:')) {
+      tipoEvento = linea.substring(6).trim();
+    } else if (linea.startsWith('data:')) {
+      datos = linea.substring(5).trim();
     }
   }
+
+  if (!datos) return;
+
+  try {
+    const datosJson = JSON.parse(datos);
+
+    switch (tipoEvento) {
+      case 'conectado':
+        restLog(`SSE: ${datosJson.mensaje}`, 'exito');
+        break;
+
+      case 'heartbeat':
+        // Heartbeat del servidor, ignorar silenciosamente
+        break;
+
+      case 'test-registrador':
+        restLog(`SSE: Test recibido para ${datosJson.ip}:${datosJson.puerto}`, 'info');
+        if (restCallbacks.onTestPendiente) {
+          // Transformar al formato esperado por ejecutarTestConexion
+          restCallbacks.onTestPendiente({
+            id: datosJson.testId,
+            ip: datosJson.ip,
+            puerto: datosJson.puerto,
+            unit_id: datosJson.unitId,
+            indice_inicial: datosJson.indiceInicial,
+            cantidad_registros: datosJson.cantidadRegistros,
+          });
+        }
+        break;
+
+      default:
+        restLog(`SSE: Evento desconocido '${tipoEvento}'`, 'advertencia');
+    }
+  } catch (error) {
+    restLog(`SSE: Error parseando evento - ${error.message}`, 'error');
+  }
 }
+
+function programarReconexionSSE() {
+  if (sseReconnectTimeoutId) {
+    clearTimeout(sseReconnectTimeoutId);
+  }
+
+  restLog(`SSE: Reconectando en ${SSE_RECONNECT_DELAY / 1000}s...`, 'info');
+
+  sseReconnectTimeoutId = setTimeout(() => {
+    if (token && conectado) {
+      conectarSSE();
+    }
+  }, SSE_RECONNECT_DELAY);
+}
+
+function desconectarSSE() {
+  if (sseAbortController) {
+    sseAbortController.abort();
+    sseAbortController = null;
+  }
+  if (sseReconnectTimeoutId) {
+    clearTimeout(sseReconnectTimeoutId);
+    sseReconnectTimeoutId = null;
+  }
+  sseConectado = false;
+}
+
+// ============================================================================
+// GESTIÓN DE INTERVALOS
+// ============================================================================
 
 function iniciarHeartbeat() {
   if (heartbeatIntervalId) clearInterval(heartbeatIntervalId);
@@ -248,15 +385,10 @@ function iniciarConfigPolling() {
   configPollIntervalId = setInterval(pollConfiguracion, CONFIG_POLL_INTERVAL);
 }
 
-function iniciarTestsPolling() {
-  if (testsPollIntervalId) clearInterval(testsPollIntervalId);
-  testsPollIntervalId = setInterval(pollTestsPendientes, TESTS_POLL_INTERVAL);
-}
-
 function detenerIntervalosRest() {
   if (heartbeatIntervalId) { clearInterval(heartbeatIntervalId); heartbeatIntervalId = null; }
   if (configPollIntervalId) { clearInterval(configPollIntervalId); configPollIntervalId = null; }
-  if (testsPollIntervalId) { clearInterval(testsPollIntervalId); testsPollIntervalId = null; }
+  desconectarSSE();
 }
 
 async function iniciarConexion(opciones = {}) {
@@ -270,7 +402,8 @@ async function iniciarConexion(opciones = {}) {
     if (workspacesData.length > 0 && restCallbacks.onVinculado) restCallbacks.onVinculado(workspacesData[0]);
     iniciarHeartbeat();
     iniciarConfigPolling();
-    iniciarTestsPolling();
+    // Conectar SSE para recibir comandos en tiempo real
+    conectarSSE();
   } else {
     if (restCallbacks.onError) restCallbacks.onError(new Error('No se pudo autenticar'));
   }
@@ -627,6 +760,7 @@ let tiempoInicio = Date.now();
 
 let estadoApp = {
   conectado: false,
+  sseConectado: false,
   agente: null,
   workspace: null,
   registradores: [],
@@ -716,6 +850,7 @@ function mostrarNotificacion(titulo, cuerpo) {
 function configurarIPC() {
   ipcMain.handle('get-estado', () => ({
     ...estadoApp,
+    sseConectado,
     tiempoActivo: Math.floor((Date.now() - tiempoInicio) / 1000),
   }));
 
