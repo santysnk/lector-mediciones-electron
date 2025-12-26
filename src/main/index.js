@@ -74,9 +74,9 @@ async function testConexionModbus({ ip, puerto, unitId = 1, indiceInicial = 0, c
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 const CLAVE_SECRETA = process.env.CLAVE_SECRETA;
-const CONFIG_POLL_INTERVAL = 10000;
-const TESTS_POLL_INTERVAL = 5000;
-const HEARTBEAT_INTERVAL = 30000;
+const CONFIG_POLL_INTERVAL = 30000;  // 30s - la configuración no cambia frecuentemente
+const TESTS_POLL_INTERVAL = 15000;   // 15s - los tests son acciones ocasionales
+const HEARTBEAT_INTERVAL = 30000;    // 30s - mantener
 
 let token = null;
 let agenteData = null;
