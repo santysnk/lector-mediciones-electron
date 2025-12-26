@@ -74,7 +74,6 @@ async function testConexionModbus({ ip, puerto, unitId = 1, indiceInicial = 0, c
 
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 const CLAVE_SECRETA = process.env.CLAVE_SECRETA;
-const CONFIG_POLL_INTERVAL = 30000;  // 30s - la configuración no cambia frecuentemente
 const HEARTBEAT_INTERVAL = 30000;    // 30s - mantener
 const SSE_RECONNECT_DELAY = 5000;    // 5s - delay antes de reconectar SSE
 
@@ -84,11 +83,9 @@ let workspacesData = [];
 let conectado = false;
 let sseConectado = false;
 let heartbeatIntervalId = null;
-let configPollIntervalId = null;
 let sseAbortController = null;
 let sseReconnectTimeoutId = null;
 let restCallbacks = {};
-let ultimaConfigHash = null;
 
 function restLog(mensaje, tipo = 'info') {
   if (restCallbacks.onLog) restCallbacks.onLog(mensaje, tipo);
@@ -173,13 +170,9 @@ async function enviarHeartbeat() {
   }
 }
 
-async function obtenerConfiguracion(esInicial = false) {
+async function obtenerConfiguracion() {
   if (!token) throw new Error('No autenticado');
-  const data = await fetchBackend('/agente/config', { method: 'GET' });
-  if (esInicial && data.registradores) {
-    ultimaConfigHash = hashConfiguracion(data.registradores);
-  }
-  return data;
+  return await fetchBackend('/agente/config', { method: 'GET' });
 }
 
 async function enviarLecturas(lecturas) {
@@ -193,27 +186,20 @@ async function reportarResultadoTest(testId, resultado) {
   return await fetchBackend(`/agente/tests/${testId}/resultado`, { method: 'POST', body: JSON.stringify(resultado) });
 }
 
-function hashConfiguracion(registradores) {
-  const ordenados = [...registradores].sort((a, b) => (a.id || '').localeCompare(b.id || ''));
-  return JSON.stringify(ordenados.map(r => ({
-    id: r.id, activo: r.activo, intervaloSegundos: r.intervaloSegundos,
-    ip: r.ip, puerto: r.puerto, indiceInicial: r.indiceInicial, cantidadRegistros: r.cantidadRegistros,
-  })));
-}
-
-async function pollConfiguracion() {
+/**
+ * Recarga la configuración cuando el backend notifica cambios vía SSE
+ */
+async function recargarConfiguracion(motivo) {
   if (!token) return;
   try {
+    restLog(`Recargando configuración: ${motivo}`, 'info');
     const config = await obtenerConfiguracion();
     const registradores = config.registradores || [];
-    const nuevoHash = hashConfiguracion(registradores);
-    if (ultimaConfigHash !== null && ultimaConfigHash !== nuevoHash) {
-      restLog('Cambio en configuración detectado', 'info');
-      if (restCallbacks.onConfiguracionCambiada) restCallbacks.onConfiguracionCambiada(registradores);
+    if (restCallbacks.onConfiguracionCambiada) {
+      restCallbacks.onConfiguracionCambiada(registradores);
     }
-    ultimaConfigHash = nuevoHash;
   } catch (error) {
-    restLog(`Error config: ${error.message}`, 'advertencia');
+    restLog(`Error recargando config: ${error.message}`, 'advertencia');
   }
 }
 
@@ -336,6 +322,11 @@ function procesarEventoSSE(eventoRaw) {
         }
         break;
 
+      case 'config-actualizada':
+        restLog(`SSE: ${datosJson.motivo}`, 'info');
+        recargarConfiguracion(datosJson.motivo);
+        break;
+
       default:
         restLog(`SSE: Evento desconocido '${tipoEvento}'`, 'advertencia');
     }
@@ -380,14 +371,8 @@ function iniciarHeartbeat() {
   heartbeatIntervalId = setInterval(enviarHeartbeat, HEARTBEAT_INTERVAL);
 }
 
-function iniciarConfigPolling() {
-  if (configPollIntervalId) clearInterval(configPollIntervalId);
-  configPollIntervalId = setInterval(pollConfiguracion, CONFIG_POLL_INTERVAL);
-}
-
 function detenerIntervalosRest() {
   if (heartbeatIntervalId) { clearInterval(heartbeatIntervalId); heartbeatIntervalId = null; }
-  if (configPollIntervalId) { clearInterval(configPollIntervalId); configPollIntervalId = null; }
   desconectarSSE();
 }
 
@@ -401,8 +386,7 @@ async function iniciarConexion(opciones = {}) {
     if (restCallbacks.onAutenticado) restCallbacks.onAutenticado(agenteData);
     if (workspacesData.length > 0 && restCallbacks.onVinculado) restCallbacks.onVinculado(workspacesData[0]);
     iniciarHeartbeat();
-    iniciarConfigPolling();
-    // Conectar SSE para recibir comandos en tiempo real
+    // Conectar SSE para recibir comandos y notificaciones de config en tiempo real
     conectarSSE();
   } else {
     if (restCallbacks.onError) restCallbacks.onError(new Error('No se pudo autenticar'));
@@ -415,7 +399,6 @@ function cerrarConexion() {
   token = null;
   agenteData = null;
   conectado = false;
-  ultimaConfigHash = null;
 }
 
 // ============================================================================
@@ -448,8 +431,7 @@ async function cargarRegistradores() {
   pollingLog('Cargando registradores...', 'info');
 
   try {
-    const esInicial = registradoresCache.length === 0;
-    const config = await obtenerConfiguracion(esInicial);
+    const config = await obtenerConfiguracion();
     const registradores = config.registradores || [];
 
     if (registradores.length === 0) {
