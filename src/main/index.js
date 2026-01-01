@@ -233,6 +233,59 @@ async function testConexionModbus({ ip, puerto, unitId = 1, indiceInicial = 0, c
   }
 }
 
+/**
+ * Test de conexión leyendo coils (función Modbus 01)
+ * Para leer estados de protecciones que usan direcciones de bits
+ */
+async function testConexionCoils({ ip, puerto, unitId = 1, direccionCoil = 0, cantidadBits = 16 }) {
+  const puertoNum = Number(puerto);
+  const direccion = Number(direccionCoil) || 0;
+  const cantidad = Number(cantidadBits) || 16;
+
+  if (!ip || !puertoNum) {
+    return { exito: false, error: 'IP y puerto son requeridos' };
+  }
+
+  const cliente = new ModbusRTU();
+  const tiempoInicio = Date.now();
+
+  try {
+    await cliente.connectTCP(ip, { port: puertoNum });
+    cliente.setID(unitId);
+    cliente.setTimeout(5000);
+
+    // Usar función 01 (Read Coils) en lugar de función 03 (Read Holding Registers)
+    const respuesta = await cliente.readCoils(direccion, cantidad);
+    const tiempoMs = Date.now() - tiempoInicio;
+
+    // respuesta.data es un array de booleanos
+    const coils = respuesta.data.map((valor, i) => ({
+      direccion: direccion + i,
+      valor: valor ? 1 : 0
+    }));
+
+    // Identificar bits activos
+    const bitsActivos = coils.filter(c => c.valor === 1).map(c => c.direccion);
+
+    return {
+      exito: true,
+      tiempoMs,
+      mensaje: `Lectura de coils exitosa en ${tiempoMs}ms`,
+      coils,
+      bitsActivos,
+      tipoLectura: 'coils'
+    };
+  } catch (error) {
+    return {
+      exito: false,
+      error: error.message || 'Error desconocido',
+      tiempoMs: Date.now() - tiempoInicio
+    };
+  } finally {
+    try { cliente.close(); } catch (e) { }
+  }
+}
+
 // ============================================================================
 // SERVICIO REST Y SSE
 // ============================================================================
@@ -523,6 +576,20 @@ function procesarEventoSSE(eventoRaw) {
             unit_id: datosJson.unitId,
             indice_inicial: datosJson.indiceInicial,
             cantidad_registros: datosJson.cantidadRegistros,
+          });
+        }
+        break;
+
+      case 'test-coils':
+        restLog(`SSE: Test coils recibido para ${datosJson.ip}:${datosJson.puerto} dir:${datosJson.direccionCoil}`, 'info');
+        if (restCallbacks.onTestCoilsPendiente) {
+          restCallbacks.onTestCoilsPendiente({
+            id: datosJson.testId,
+            ip: datosJson.ip,
+            puerto: datosJson.puerto,
+            unit_id: datosJson.unitId,
+            direccion_coil: datosJson.direccionCoil,
+            cantidad_bits: datosJson.cantidadBits,
           });
         }
         break;
@@ -942,6 +1009,52 @@ async function ejecutarTestConexion(test) {
   }
 }
 
+/**
+ * Ejecuta un test de lectura de coils (función Modbus 01)
+ * Similar a ejecutarTestConexion pero para bits/coils
+ */
+async function ejecutarTestCoils(test) {
+  if (testsEnProceso.has(test.id)) return;
+  testsEnProceso.add(test.id);
+
+  pollingLog(`Test Coils: ${test.ip}:${test.puerto} dir:${test.direccion_coil}`, 'ciclo');
+
+  try {
+    const resultado = await testConexionCoils({
+      ip: test.ip,
+      puerto: test.puerto,
+      unitId: test.unit_id || 1,
+      direccionCoil: test.direccion_coil,
+      cantidadBits: test.cantidad_bits,
+    });
+
+    if (resultado.exito) {
+      pollingLog(`Test Coils OK: ${resultado.tiempoMs}ms - Activos: [${resultado.bitsActivos.join(',')}]`, 'exito');
+      await reportarResultadoTest(test.id, {
+        exito: true,
+        tiempoRespuestaMs: resultado.tiempoMs,
+        coils: resultado.coils,
+        bitsActivos: resultado.bitsActivos,
+        tipoLectura: 'coils',
+      });
+    } else {
+      pollingLog(`Test Coils FAIL: ${resultado.error}`, 'error');
+      await reportarResultadoTest(test.id, {
+        exito: false,
+        tiempoRespuestaMs: resultado.tiempoMs,
+        errorMensaje: resultado.error,
+      });
+    }
+  } catch (error) {
+    pollingLog(`Test Coils error: ${error.message}`, 'error');
+    try {
+      await reportarResultadoTest(test.id, { exito: false, errorMensaje: error.message });
+    } catch (e) { }
+  } finally {
+    testsEnProceso.delete(test.id);
+  }
+}
+
 // ============================================================================
 // ELECTRON APP
 // ============================================================================
@@ -1140,6 +1253,7 @@ async function iniciarAgente() {
     onLog: (mensaje, tipo) => agregarLog(`[REST] ${mensaje}`, tipo),
     onConfiguracionCambiada: async (regs) => await actualizarRegistradoresGranular(regs),
     onTestPendiente: (test) => ejecutarTestConexion(test),
+    onTestCoilsPendiente: (test) => ejecutarTestCoils(test),
   });
 }
 
