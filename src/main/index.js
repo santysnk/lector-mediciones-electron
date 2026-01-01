@@ -240,7 +240,8 @@ async function testConexionModbus({ ip, puerto, unitId = 1, indiceInicial = 0, c
 const BACKEND_URL = process.env.BACKEND_URL || 'http://localhost:3001';
 const CLAVE_SECRETA = process.env.CLAVE_SECRETA;
 const HEARTBEAT_INTERVAL = 30000;    // 30s - mantener
-const SSE_RECONNECT_DELAY = 5000;    // 5s - delay antes de reconectar SSE
+const SSE_RECONNECT_DELAY = 3000;    // 3s - delay antes de reconectar SSE (reducido para reconexión más rápida)
+const SSE_MAX_SILENCE_MS = 60000;    // 60s - si no recibimos nada del servidor, reconectar
 
 let token = null;
 let agenteData = null;
@@ -250,6 +251,8 @@ let sseConectado = false;
 let heartbeatIntervalId = null;
 let sseAbortController = null;
 let sseReconnectTimeoutId = null;
+let sseLastActivityTime = null;
+let sseSilenceCheckId = null;
 let restCallbacks = {};
 
 function restLog(mensaje, tipo = 'info') {
@@ -383,6 +386,12 @@ async function conectarSSE() {
     sseAbortController.abort();
   }
 
+  // Limpiar detector de silencio anterior
+  if (sseSilenceCheckId) {
+    clearInterval(sseSilenceCheckId);
+    sseSilenceCheckId = null;
+  }
+
   sseAbortController = new AbortController();
   const url = `${BACKEND_URL}/api/agente/eventos`;
 
@@ -404,7 +413,19 @@ async function conectarSSE() {
     }
 
     sseConectado = true;
+    sseLastActivityTime = Date.now();
     restLog('SSE: Conectado', 'exito');
+
+    // Iniciar detector de silencio - si no recibimos nada en 60s, forzar reconexión
+    sseSilenceCheckId = setInterval(() => {
+      const silencioMs = Date.now() - sseLastActivityTime;
+      if (silencioMs > SSE_MAX_SILENCE_MS) {
+        restLog(`SSE: Sin actividad por ${Math.round(silencioMs/1000)}s, reconectando...`, 'advertencia');
+        if (sseAbortController) {
+          sseAbortController.abort();
+        }
+      }
+    }, 10000); // Verificar cada 10 segundos
 
     // Leer el stream de eventos
     const reader = response.body.getReader();
@@ -419,6 +440,9 @@ async function conectarSSE() {
         break;
       }
 
+      // Actualizar tiempo de última actividad con cualquier dato recibido
+      sseLastActivityTime = Date.now();
+
       buffer += decoder.decode(value, { stream: true });
 
       // Procesar eventos completos (terminan con \n\n)
@@ -427,18 +451,34 @@ async function conectarSSE() {
 
       for (const evento of eventos) {
         if (evento.trim()) {
-          procesarEventoSSE(evento);
+          // Ignorar comentarios SSE (líneas que empiezan con :)
+          // pero ya actualizamos sseLastActivityTime arriba
+          if (!evento.startsWith(':')) {
+            procesarEventoSSE(evento);
+          }
         }
       }
     }
   } catch (error) {
     if (error.name === 'AbortError') {
-      restLog('SSE: Conexión cancelada', 'info');
-      return; // No reconectar si fue cancelado intencionalmente
+      // Verificar si fue por silencio o por cancelación intencional
+      const silencioMs = sseLastActivityTime ? Date.now() - sseLastActivityTime : 0;
+      if (silencioMs > SSE_MAX_SILENCE_MS) {
+        restLog('SSE: Reconectando por inactividad...', 'info');
+        // Continuar para reconectar
+      } else {
+        restLog('SSE: Conexión cancelada', 'info');
+        return; // No reconectar si fue cancelado intencionalmente
+      }
+    } else {
+      restLog(`SSE: Error - ${error.message}`, 'error');
     }
-    restLog(`SSE: Error - ${error.message}`, 'error');
   } finally {
     sseConectado = false;
+    if (sseSilenceCheckId) {
+      clearInterval(sseSilenceCheckId);
+      sseSilenceCheckId = null;
+    }
   }
 
   // Reconectar después de un delay
@@ -523,7 +563,12 @@ function desconectarSSE() {
     clearTimeout(sseReconnectTimeoutId);
     sseReconnectTimeoutId = null;
   }
+  if (sseSilenceCheckId) {
+    clearInterval(sseSilenceCheckId);
+    sseSilenceCheckId = null;
+  }
   sseConectado = false;
+  sseLastActivityTime = null;
 }
 
 // ============================================================================
