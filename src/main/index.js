@@ -339,8 +339,28 @@ async function fetchBackend(endpoint, options = {}) {
     return data;
   } catch (error) {
     if (error.message.includes('fetch failed') || error.message.includes('ECONNREFUSED')) {
+      const estabaConectado = conectado;
       conectado = false;
       if (restCallbacks.onDesconectado) restCallbacks.onDesconectado('Sin conexión al backend');
+
+      // Si estábamos conectados y ahora no, programar intento de reconexión
+      if (estabaConectado && token) {
+        restLog('Intentando recuperar conexión...', 'advertencia');
+        setTimeout(async () => {
+          try {
+            const reauth = await autenticar();
+            if (reauth && restCallbacks.onConectado) {
+              restCallbacks.onConectado();
+              // Reconectar SSE también
+              if (!sseConectado) {
+                conectarSSE();
+              }
+            }
+          } catch (e) {
+            restLog(`Reconexión fallida: ${e.message}`, 'error');
+          }
+        }, 5000); // Esperar 5s antes de reintentar
+      }
     }
     throw error;
   }
@@ -513,28 +533,45 @@ async function conectarSSE() {
       }
     }
   } catch (error) {
+    // Determinar si debemos reconectar
+    let debeReconectar = true;
+
     if (error.name === 'AbortError') {
       // Verificar si fue por silencio o por cancelación intencional
       const silencioMs = sseLastActivityTime ? Date.now() - sseLastActivityTime : 0;
       if (silencioMs > SSE_MAX_SILENCE_MS) {
         restLog('SSE: Reconectando por inactividad...', 'info');
-        // Continuar para reconectar
+      } else if (!token) {
+        // Si no hay token, fue cancelación por logout
+        restLog('SSE: Conexión cancelada (sin token)', 'info');
+        debeReconectar = false;
       } else {
-        restLog('SSE: Conexión cancelada', 'info');
-        return; // No reconectar si fue cancelado intencionalmente
+        // Abort con token presente - probablemente desconexión temporal, reconectar
+        restLog('SSE: Conexión interrumpida, reconectando...', 'advertencia');
       }
     } else {
       restLog(`SSE: Error - ${error.message}`, 'error');
     }
-  } finally {
+
     sseConectado = false;
     if (sseSilenceCheckId) {
       clearInterval(sseSilenceCheckId);
       sseSilenceCheckId = null;
     }
+
+    // Reconectar después de un delay si corresponde
+    if (debeReconectar && token) {
+      programarReconexionSSE();
+    }
+    return;
   }
 
-  // Reconectar después de un delay
+  // Si llegamos aquí (done=true del reader), reconectar
+  sseConectado = false;
+  if (sseSilenceCheckId) {
+    clearInterval(sseSilenceCheckId);
+    sseSilenceCheckId = null;
+  }
   programarReconexionSSE();
 }
 
@@ -615,7 +652,9 @@ function programarReconexionSSE() {
   restLog(`SSE: Reconectando en ${SSE_RECONNECT_DELAY / 1000}s...`, 'info');
 
   sseReconnectTimeoutId = setTimeout(() => {
-    if (token && conectado) {
+    // Reconectar si tenemos token, incluso si conectado es false
+    // porque el SSE debe intentar mantener la conexión activa
+    if (token) {
       conectarSSE();
     }
   }, SSE_RECONNECT_DELAY);
